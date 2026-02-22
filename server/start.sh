@@ -114,12 +114,14 @@ run_handler() {
   trap "rm -f '$tmp'" EXIT
 
   if [[ "$content_length" -gt 0 ]]; then
-    # Read body in 1MB blocks (dd bs=1 would be one byte at a time, extremely slow for large uploads)
-    blocks=$(( content_length / 1048576 ))
-    rest=$(( content_length % 1048576 ))
+    # Read body in 8MB blocks (dd bs=1 would be one byte at a time, extremely slow for large uploads)
+    BS=8388608
+    blocks=$(( content_length / BS ))
+    rest=$(( content_length % BS ))
     if ! (
-      { [[ $blocks -gt 0 ]] && dd bs=1048576 iflag=fullblock count=$blocks 2>/dev/null; }
-      { [[ $rest -gt 0 ]] && dd bs=1 count=$rest 2>/dev/null; }
+      { [[ $blocks -gt 0 ]] && dd bs=$BS iflag=fullblock count=$blocks 2>/dev/null; }
+      { [[ $rest -gt 0 ]] && dd bs=65536 iflag=fullblock count=$(( rest / 65536 )) 2>/dev/null; }
+      { [[ $(( rest % 65536 )) -gt 0 ]] && dd bs=1 count=$(( rest % 65536 )) 2>/dev/null; }
     ) > "$tmp"; then
       log_error "client=${client_id} path=${x_file_path} failed to read body"
       send_response 500 "Internal Server Error"
