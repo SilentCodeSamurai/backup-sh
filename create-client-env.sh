@@ -29,6 +29,7 @@ echo "Creating client.env from client.env.template (press Enter to keep default)
 > "$OUTPUT"
 
 while IFS= read -r line; do
+  line="${line%%$'\r'}"
   # Skip comments and empty lines
   if [[ "$line" =~ ^[[:space:]]*# ]] || [[ -z "${line// }" ]]; then
     echo "$line" >> "$OUTPUT"
@@ -37,7 +38,10 @@ while IFS= read -r line; do
   if [[ "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
     var="${BASH_REMATCH[1]}"
     default="${BASH_REMATCH[2]}"
-    read -r -p "${var} [${default}]: " input
+    default="${default%"${default##*[![:space:]]}"}"
+    default="${default#"${default%%[![:space:]]*}"}"
+    printf '%s [%s]: ' "$var" "$default" > /dev/tty
+    read -r input < /dev/tty
     if [[ -z "${input// }" ]]; then
       echo "${var}=${default}" >> "$OUTPUT"
     else
