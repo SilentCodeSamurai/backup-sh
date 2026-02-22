@@ -117,22 +117,36 @@ upload_file() {
   if [[ "$size" =~ ^[0-9]+$ ]] && [[ "$size" -ge "$STREAM_THRESHOLD" ]]; then
     log_info "streaming upload started path=${relative_path} size=${size}"
     start_ts=$(date +%s)
+    progress_file=$(mktemp)
     (
       while true; do
         sleep 5
         elapsed=$(($(date +%s) - start_ts))
-        log_info "upload in progress path=${relative_path} size=${size} elapsed=${elapsed}s"
+        pct=$(grep -oE '[0-9]+(\.[0-9]+)?%' "$progress_file" 2>/dev/null | tail -1 | tr -d '%')
+        if [[ -n "$pct" ]]; then
+          log_info "upload in progress path=${relative_path} size=${size} ${pct}% elapsed=${elapsed}s"
+        else
+          log_info "upload in progress path=${relative_path} size=${size} elapsed=${elapsed}s"
+        fi
       done
     ) &
     progress_pid=$!
-    # Always use curl -T (PUT); piping to curl --data-binary @- loads full body into memory and can OOM
-    code=$(curl -s -o /dev/null -w '%{http_code}' -T "$abs_path" \
+    cleanup_progress() {
+      kill "$progress_pid" 2>/dev/null
+      wait "$progress_pid" 2>/dev/null
+      rm -f "$progress_file"
+    }
+    trap 'cleanup_progress; exit 130' INT
+    trap 'cleanup_progress; exit 143' TERM
+    trap 'cleanup_progress' EXIT
+    # curl -T streams from disk (no OOM); --progress-bar writes % to stderr, we parse it for logs
+    code=$(curl --progress-bar -o /dev/null -w '%{http_code}' -T "$abs_path" \
       -H "X-Access-Key: ${ACCESS_KEY}" \
       -H "X-File-Path: ${relative_path}" \
       $INSECURE \
-      "$UPLOAD_URL")
-    kill "$progress_pid" 2>/dev/null
-    wait "$progress_pid" 2>/dev/null
+      "$UPLOAD_URL" 2> "$progress_file")
+    trap - EXIT INT TERM
+    cleanup_progress
   else
     code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
       -H "X-Access-Key: ${ACCESS_KEY}" \
