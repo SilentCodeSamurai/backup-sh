@@ -120,7 +120,7 @@ upload_file() {
     progress_file=$(mktemp)
     (
       while true; do
-        sleep 5
+        sleep 10
         elapsed=$(($(date +%s) - start_ts))
         pct=$(grep -oE '[0-9]+(\.[0-9]+)?%' "$progress_file" 2>/dev/null | tail -1 | tr -d '%')
         if [[ -n "$pct" ]]; then
