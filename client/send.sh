@@ -115,11 +115,23 @@ upload_file() {
   local code
   # Use curl -T (PUT, streams file) for large files to avoid --data-binary loading entire file into memory
   if [[ "$size" =~ ^[0-9]+$ ]] && [[ "$size" -ge "$STREAM_THRESHOLD" ]]; then
-    code=$(curl -s -o /dev/null -w '%{http_code}' -T "$abs_path" \
+    log_info "streaming upload started path=${relative_path} size=${size} (progress bar below)"
+    start_ts=$(date +%s)
+    (
+      while true; do
+        sleep 60
+        elapsed=$(($(date +%s) - start_ts))
+        log_info "upload in progress path=${relative_path} size=${size} elapsed=${elapsed}s"
+      done
+    ) &
+    progress_pid=$!
+    code=$(curl --progress-bar -o /dev/null -w '%{http_code}' -T "$abs_path" \
       -H "X-Access-Key: ${ACCESS_KEY}" \
       -H "X-File-Path: ${relative_path}" \
       $INSECURE \
       "$UPLOAD_URL")
+    kill "$progress_pid" 2>/dev/null
+    wait "$progress_pid" 2>/dev/null
   else
     code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
       -H "X-Access-Key: ${ACCESS_KEY}" \
