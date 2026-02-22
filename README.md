@@ -29,7 +29,7 @@ client/
 **On the backup server (receiver)**
 
 1. `cd server && bash setup.sh` — prompts for each variable and installs socat if missing (use `-f` to overwrite existing `server.env`).
-2. `bash start.sh` — start the server (runs in foreground; for background, run `nohup bash start.sh &` or use a process manager).
+2. `bash start.sh` — start the server. If you run from a terminal (e.g. SSH), it detaches automatically and keeps running after you disconnect. Logs go to `LOG_FILE`.
 
 To stop: `bash stop.sh` (kills the process listening on the port from `server.env`).
 

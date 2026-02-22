@@ -194,6 +194,13 @@ run_daemon() {
   mkdir -p "$(dirname "$LOG_FILE")"
   touch "$LOG_FILE"
 
+  # If running in a terminal (e.g. SSH), detach so server survives disconnect
+  if [[ -t 1 ]]; then
+    nohup bash "${SCRIPT_DIR}/start.sh" >> "$LOG_FILE" 2>&1 &
+    echo "Server started in background (PID $!). Logs: $LOG_FILE"
+    exit 0
+  fi
+
   log_info "starting backup server backup_root=${BACKUP_ROOT} port=${PORT} max_per_client=${MAX_SIZE_PER_CLIENT} access_key=***"
   exec socat "TCP-LISTEN:${PORT},reuseaddr,fork" "EXEC:${SCRIPT_DIR}/start.sh handler"
 }
