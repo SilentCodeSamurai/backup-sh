@@ -110,12 +110,23 @@ upload_file() {
   size=$(stat -c %s "$abs_path" 2>/dev/null || echo "?")
   log_info "uploading path=${relative_path} size=${size}"
   local code
-  code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
-    -H "X-Access-Key: ${ACCESS_KEY}" \
-    -H "X-File-Path: ${relative_path}" \
-    --data-binary "@${abs_path}" \
-    $INSECURE \
-    "$UPLOAD_URL")
+  # Stream file via stdin to avoid loading into memory (--data-binary @file reads whole file)
+  if [[ "$size" =~ ^[0-9]+$ ]]; then
+    code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+      -H "Content-Length: ${size}" \
+      -H "X-Access-Key: ${ACCESS_KEY}" \
+      -H "X-File-Path: ${relative_path}" \
+      --data-binary @- \
+      $INSECURE \
+      "$UPLOAD_URL" < "$abs_path")
+  else
+    code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+      -H "X-Access-Key: ${ACCESS_KEY}" \
+      -H "X-File-Path: ${relative_path}" \
+      --data-binary "@${abs_path}" \
+      $INSECURE \
+      "$UPLOAD_URL")
+  fi
   if [[ "$code" != "200" ]]; then
     log_error "upload failed path=${relative_path} http_code=${code}"
     if [[ "$code" == "000" ]]; then
