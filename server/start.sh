@@ -202,7 +202,8 @@ run_daemon() {
   fi
 
   log_info "starting backup server backup_root=${BACKUP_ROOT} port=${PORT} max_per_client=${MAX_SIZE_PER_CLIENT} access_key=***"
-  exec socat "TCP-LISTEN:${PORT},reuseaddr,fork" "EXEC:${SCRIPT_DIR}/start.sh handler"
+  # Use bash so start.sh does not need execute permission (socat execvp would require +x)
+  exec socat "TCP-LISTEN:${PORT},reuseaddr,fork" "EXEC:bash ${SCRIPT_DIR}/start.sh handler"
 }
 
 case "${1:-}" in

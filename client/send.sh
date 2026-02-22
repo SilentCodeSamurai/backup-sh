@@ -118,6 +118,9 @@ upload_file() {
     "$UPLOAD_URL")
   if [[ "$code" != "200" ]]; then
     log_error "upload failed path=${relative_path} http_code=${code}"
+    if [[ "$code" == "000" ]]; then
+      log_error "Connection failed - check SERVER_URL (include port, e.g. http://host:9999) and that the server is running"
+    fi
     return 1
   fi
   log_info "uploaded path=${relative_path} http_code=${code}"
