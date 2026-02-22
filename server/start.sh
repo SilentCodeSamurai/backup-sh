@@ -210,8 +210,10 @@ run_daemon() {
 
 case "${1:-}" in
   handler)
+    set +e
     export BACKUP_HANDLER=1
     run_handler
+    exit 0
     ;;
   *)
     run_daemon
