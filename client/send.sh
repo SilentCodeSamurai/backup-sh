@@ -103,6 +103,9 @@ if [[ ! -e "$FILE_OR_DIR" ]]; then
   exit 1
 fi
 
+# Threshold above which we use PUT + -T (streaming); below we use POST. 100MB.
+STREAM_THRESHOLD=$((100 * 1024 * 1024))
+
 upload_file() {
   local abs_path="$1"
   local relative_path="$2"
@@ -110,15 +113,13 @@ upload_file() {
   size=$(stat -c %s "$abs_path" 2>/dev/null || echo "?")
   log_info "uploading path=${relative_path} size=${size}"
   local code
-  # Stream file via stdin to avoid loading into memory (--data-binary @file reads whole file)
-  if [[ "$size" =~ ^[0-9]+$ ]]; then
-    code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
-      -H "Content-Length: ${size}" \
+  # Use curl -T (PUT, streams file) for large files to avoid --data-binary loading entire file into memory
+  if [[ "$size" =~ ^[0-9]+$ ]] && [[ "$size" -ge "$STREAM_THRESHOLD" ]]; then
+    code=$(curl -s -o /dev/null -w '%{http_code}' -T "$abs_path" \
       -H "X-Access-Key: ${ACCESS_KEY}" \
       -H "X-File-Path: ${relative_path}" \
-      --data-binary @- \
       $INSECURE \
-      "$UPLOAD_URL" < "$abs_path")
+      "$UPLOAD_URL")
   else
     code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
       -H "X-Access-Key: ${ACCESS_KEY}" \
