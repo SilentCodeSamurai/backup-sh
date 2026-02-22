@@ -49,12 +49,14 @@ log_level() {
   local ts
   ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
   echo "${ts} [${level}] ${msg}" >> "$LOG_FILE"
-  if [[ -z "${BACKUP_HANDLER:-}" ]]; then
+  # Only duplicate to stderr when attached to a TTY (avoids duplicate lines when stderr is redirected to LOG_FILE)
+  if [[ -z "${BACKUP_HANDLER:-}" ]] && [[ -t 2 ]]; then
     echo "${ts} [${level}] ${msg}" >&2
   fi
 }
 
 run_handler() {
+  trap '' PIPE
   local client_id="${SOCAT_PEERADDR:-unknown}"
   client_id="${client_id//:/_}"
   if [[ "$client_id" == "unknown" ]]; then
