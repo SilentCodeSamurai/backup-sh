@@ -1,13 +1,11 @@
 #!/usr/bin/env bash
 #
-# Backup client: uploads files or directories to the backup server.
+# Backup client: upload files or directories to the backup server.
 # Server identifies this client by connection source IP.
-# ACCESS_KEY from env BACKUP_ACCESS_KEY, or ~/.backup-sh-key, or --key-file.
 #
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Load client.env from script directory if present
 if [[ -f "${SCRIPT_DIR}/client.env" ]]; then
   set +u
   # shellcheck source=/dev/null
@@ -15,14 +13,12 @@ if [[ -f "${SCRIPT_DIR}/client.env" ]]; then
   set -u
 fi
 
-# Defaults (overridden by client.env or env)
 : "${KEY_FILE:=${HOME:-/tmp}/.backup-sh-key}"
 : "${LOG_FILE:=}"
 SERVER_URL="${SERVER_URL:-}"
 FILE_OR_DIR=""
 INSECURE=""
 
-# --- Logging: stderr and optionally LOG_FILE ---
 log_info()  { log_level "INFO"  "$*"; }
 log_warn()  { log_level "WARN"  "$*"; }
 log_error() { log_level "ERROR" "$*"; }
@@ -44,12 +40,11 @@ usage() {
   echo "  server_url   Base URL (e.g. http://backup-server:9999); optional if set in client.env" >&2
   echo "  file_or_dir  File or directory to upload (directories sent recursively)" >&2
   echo "Options:" >&2
-  echo "  --key-file PATH   Use this file for access key (default from client.env or ~/.backup-sh-key)" >&2
+  echo "  --key-file PATH   Use this file for access key" >&2
   echo "  --insecure        Skip TLS verification (curl -k)" >&2
   exit 1
 }
 
-# Parse args
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --key-file)
@@ -85,16 +80,13 @@ if [[ -z "$SERVER_URL" ]]; then
   usage
 fi
 
-# Optional: ensure log file directory exists
 if [[ -n "${LOG_FILE:-}" ]]; then
   mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
 fi
 
-# Normalize URL (no trailing /)
 SERVER_URL="${SERVER_URL%/}"
 UPLOAD_URL="${SERVER_URL}/upload"
 
-# Access key: env BACKUP_ACCESS_KEY or ACCESS_KEY, then key file
 ACCESS_KEY="${BACKUP_ACCESS_KEY:-${ACCESS_KEY:-}}"
 if [[ -z "$ACCESS_KEY" ]] && [[ -f "$KEY_FILE" ]]; then
   ACCESS_KEY=$(cat "$KEY_FILE")

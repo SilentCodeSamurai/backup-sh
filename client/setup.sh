@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 #
-# Creates client.env by prompting for each variable from client.env.template.
-# Existing client.env is not overwritten unless run with -f.
+# Client setup: prompt for env from client.env.template, write client.env. Optionally install curl if missing.
 #
 set -euo pipefail
 
@@ -13,6 +12,22 @@ if [[ "${1:-}" == "-f" ]] || [[ "${1:-}" == "--force" ]]; then
   FORCE=1
 else
   FORCE=0
+fi
+
+# Install curl if missing (Debian/Ubuntu)
+if ! command -v curl &>/dev/null; then
+  echo "curl not found. Install with: sudo apt update && sudo apt install -y curl" >&2
+  if [[ -t 0 ]]; then
+    read -r -p "Install curl now? [y/N]: " yn < /dev/tty
+    if [[ "${yn,,}" == "y" || "${yn,,}" == "yes" ]]; then
+      sudo apt update && sudo apt install -y curl
+    else
+      echo "Install curl before running send.sh" >&2
+      exit 1
+    fi
+  else
+    exit 1
+  fi
 fi
 
 if [[ ! -f "$TEMPLATE" ]]; then
@@ -30,7 +45,6 @@ echo "Creating client.env from client.env.template (press Enter to keep default)
 
 while IFS= read -r line; do
   line="${line%%$'\r'}"
-  # Skip comments and empty lines
   if [[ "$line" =~ ^[[:space:]]*# ]] || [[ -z "${line// }" ]]; then
     echo "$line" >> "$OUTPUT"
     continue

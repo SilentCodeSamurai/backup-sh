@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 #
-# Creates server.env by prompting for each variable from server.env.template.
-# Existing server.env is not overwritten unless run with -f.
+# Server setup: prompt for env from server.env.template, write server.env, install socat if needed.
 #
 set -euo pipefail
 
@@ -13,6 +12,22 @@ if [[ "${1:-}" == "-f" ]] || [[ "${1:-}" == "--force" ]]; then
   FORCE=1
 else
   FORCE=0
+fi
+
+# Install socat if missing (Debian/Ubuntu)
+if ! command -v socat &>/dev/null; then
+  echo "socat not found. Install with: sudo apt update && sudo apt install -y socat" >&2
+  if [[ -t 0 ]]; then
+    read -r -p "Install socat now? [y/N]: " yn < /dev/tty
+    if [[ "${yn,,}" == "y" || "${yn,,}" == "yes" ]]; then
+      sudo apt update && sudo apt install -y socat
+    else
+      echo "Install socat before running start.sh" >&2
+      exit 1
+    fi
+  else
+    exit 1
+  fi
 fi
 
 if [[ ! -f "$TEMPLATE" ]]; then
@@ -30,7 +45,6 @@ echo "Creating server.env from server.env.template (press Enter to keep default)
 
 while IFS= read -r line; do
   line="${line%%$'\r'}"
-  # Skip comments and empty lines
   if [[ "$line" =~ ^[[:space:]]*# ]] || [[ -z "${line// }" ]]; then
     echo "$line" >> "$OUTPUT"
     continue
