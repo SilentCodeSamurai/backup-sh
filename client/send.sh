@@ -117,38 +117,22 @@ upload_file() {
   if [[ "$size" =~ ^[0-9]+$ ]] && [[ "$size" -ge "$STREAM_THRESHOLD" ]]; then
     log_info "streaming upload started path=${relative_path} size=${size}"
     start_ts=$(date +%s)
-    pct_file=$(mktemp)
     (
       while true; do
         sleep 5
         elapsed=$(($(date +%s) - start_ts))
-        pct=$(tail -1 "$pct_file" 2>/dev/null | tr -d ' \r')
-        if [[ -n "$pct" ]]; then
-          log_info "upload in progress path=${relative_path} size=${size} ${pct}% elapsed=${elapsed}s"
-        else
-          log_info "upload in progress path=${relative_path} size=${size} elapsed=${elapsed}s"
-        fi
+        log_info "upload in progress path=${relative_path} size=${size} elapsed=${elapsed}s"
       done
     ) &
     progress_pid=$!
-    if command -v pv &>/dev/null; then
-      code=$(pv -s "$size" -f -F '%t\n' "$abs_path" 2> "$pct_file" | curl -s -o /dev/null -w '%{http_code}' -X POST \
-        -H "Content-Length: ${size}" \
-        -H "X-Access-Key: ${ACCESS_KEY}" \
-        -H "X-File-Path: ${relative_path}" \
-        --data-binary @- \
-        $INSECURE \
-        "$UPLOAD_URL")
-    else
-      code=$(curl -s -o /dev/null -w '%{http_code}' -T "$abs_path" \
-        -H "X-Access-Key: ${ACCESS_KEY}" \
-        -H "X-File-Path: ${relative_path}" \
-        $INSECURE \
-        "$UPLOAD_URL")
-    fi
+    # Always use curl -T (PUT); piping to curl --data-binary @- loads full body into memory and can OOM
+    code=$(curl -s -o /dev/null -w '%{http_code}' -T "$abs_path" \
+      -H "X-Access-Key: ${ACCESS_KEY}" \
+      -H "X-File-Path: ${relative_path}" \
+      $INSECURE \
+      "$UPLOAD_URL")
     kill "$progress_pid" 2>/dev/null
     wait "$progress_pid" 2>/dev/null
-    rm -f "$pct_file"
   else
     code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
       -H "X-Access-Key: ${ACCESS_KEY}" \

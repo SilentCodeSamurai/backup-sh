@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Client setup: prompt for env from client.env.template, write client.env. Optionally install curl and pv if missing.
+# Client setup: prompt for env from client.env.template, write client.env. Optionally install curl if missing.
 #
 set -euo pipefail
 
@@ -27,19 +27,6 @@ if ! command -v curl &>/dev/null; then
     fi
   else
     exit 1
-  fi
-fi
-
-# Install pv (pipe viewer) if missing - used for upload progress percentage on large files (optional)
-if ! command -v pv &>/dev/null; then
-  echo "pv not found. Install with: sudo apt update && sudo apt install -y pv (enables progress % on large uploads)" >&2
-  if [[ -t 0 ]]; then
-    read -r -p "Install pv now? [y/N]: " yn < /dev/tty
-    if [[ "${yn,,}" == "y" || "${yn,,}" == "yes" ]]; then
-      sudo apt update && sudo apt install -y pv
-    else
-      echo "Large uploads will show elapsed time only (no percent). You can install pv later." >&2
-    fi
   fi
 fi
 
