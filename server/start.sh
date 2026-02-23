@@ -163,7 +163,7 @@ run_handler() {
     return
   fi
   cleanup_handler() {
-    rm -f "$tmp" 2>/dev/null || true
+    rm -f "${tmp:-}" 2>/dev/null || true
     flock -u 200 2>/dev/null || true
     exec 200>&- 2>/dev/null || true
   }
