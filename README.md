@@ -48,6 +48,8 @@ Templates live in each directory: `server/server.env.template`, `client/client.e
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BACKUP_ROOT` | `/var/backups/incoming` | Directory for all client backups (one subdir per client IP). |
+| `LOCK_DIR` | `/var/run/backup-server/locks` | Directory for per-client lock files (outside BACKUP_ROOT). |
+| `LOCK_STALE_MINS` | `60` | At startup, lock files older than this are removed (stale from crashed handlers). |
 | `PORT` | `9999` | TCP port to listen on. |
 | `ACCESS_KEY` | (required) | Secret key; must match the key used by clients. |
 | `MAX_SIZE_PER_CLIENT` | `1G` | Max total bytes per client (e.g. `1G`, `500M`). Oldest files deleted when exceeded. |

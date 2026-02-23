@@ -15,10 +15,12 @@ if [[ -f "${SCRIPT_DIR}/server.env" ]]; then
 fi
 
 : "${BACKUP_ROOT:=/var/backups/incoming}"
+: "${LOCK_DIR:=/var/run/backup-server/locks}"
 : "${PORT:=9999}"
 : "${ACCESS_KEY:=}"
 : "${MAX_SIZE_PER_CLIENT:=1G}"
 : "${LOG_FILE:=/var/log/backup-server.log}"
+: "${LOCK_STALE_MINS:=60}"
 
 parse_size() {
   local v="$1"
@@ -36,7 +38,7 @@ parse_size() {
 }
 
 MAX_BYTES=$(parse_size "$MAX_SIZE_PER_CLIENT")
-export BACKUP_ROOT PORT ACCESS_KEY MAX_BYTES LOG_FILE SCRIPT_DIR
+export BACKUP_ROOT LOCK_DIR PORT ACCESS_KEY MAX_BYTES LOG_FILE SCRIPT_DIR
 
 log_info()  { log_level "INFO"  "$*"; }
 log_warn()  { log_level "WARN"  "$*"; }
@@ -97,12 +99,22 @@ run_handler() {
   if [[ -z "$x_file_path" ]]; then
     x_file_path="upload-$(date +%s).bin"
   fi
+  # Reject encoded traversal (e.g. %2f, %2e%2e)
+  if [[ "$x_file_path" =~ %2[fF] ]] || [[ "$x_file_path" =~ %2[eE]%2[eE] ]]; then
+    log_warn "client=${client_id} invalid file path (encoded traversal)"
+    send_response 400 "Bad Request: invalid path"
+    return
+  fi
   x_file_path="${x_file_path#/}"
-  while [[ "$x_file_path" == *"/../"* ]] || [[ "$x_file_path" == "../"* ]] || [[ "$x_file_path" == *"/.." ]]; do
-    x_file_path="${x_file_path//\/../\/}"
-    x_file_path="${x_file_path#../}"
-    x_file_path="${x_file_path%/..}"
-  done
+  # Normalize: collapse multiple slashes and /./ (avoid ....// or ..//.. bypass)
+  while [[ "$x_file_path" != "${x_file_path//\/\//\/}" ]]; do x_file_path="${x_file_path//\/\//\/}"; done
+  while [[ "$x_file_path" != "${x_file_path//\/.\//\/}" ]]; do x_file_path="${x_file_path//\/.\//\/}"; done
+  # Reject any ".." segment (leading, middle, or trailing)
+  if [[ "$x_file_path" == ".." ]] || [[ "$x_file_path" == "../"* ]] || [[ "$x_file_path" == *"/../"* ]] || [[ "$x_file_path" == *"/.." ]]; then
+    log_warn "client=${client_id} invalid file path (path traversal)"
+    send_response 400 "Bad Request: invalid path"
+    return
+  fi
   if [[ "$x_file_path" =~ [^a-zA-Z0-9_\-/.] ]]; then
     log_warn "client=${client_id} invalid file path (unsafe chars)"
     send_response 400 "Bad Request: invalid path"
@@ -114,6 +126,7 @@ run_handler() {
   trap "rm -f '$tmp'" EXIT
 
   if [[ "$content_length" -gt 0 ]]; then
+    # Read exactly content_length bytes; dd exits non-zero if client sends less (e.g. disconnect), and we handle that below.
     # Read body in 8MB blocks (dd bs=1 would be one byte at a time, extremely slow for large uploads)
     BS=8388608
     blocks=$(( content_length / BS ))
@@ -127,52 +140,103 @@ run_handler() {
       send_response 500 "Internal Server Error"
       return
     fi
+  else
+    touch "$tmp"
   fi
 
   local new_size
   new_size=$(stat -c %s "$tmp" 2>/dev/null || echo 0)
-  local client_dir="${BACKUP_ROOT}/${client_id}"
-  mkdir -p "$client_dir"
+  if [[ "$new_size" -gt "$MAX_BYTES" ]]; then
+    log_warn "client=${client_id} path=${x_file_path} rejected: single file size ${new_size} exceeds quota ${MAX_BYTES}"
+    send_response 413 "Payload Too Large"
+    return
+  fi
 
+  local client_dir="${BACKUP_ROOT}/${client_id}"
+  mkdir -p "$BACKUP_ROOT"
+  mkdir -p "$LOCK_DIR"
+  local lock_file="${LOCK_DIR}/${client_id}.lock"
+  exec 200>"$lock_file"
+  if ! flock 200; then
+    log_error "client=${client_id} failed to acquire lock"
+    send_response 503 "Service Unavailable"
+    return
+  fi
+  cleanup_handler() {
+    rm -f "$tmp" 2>/dev/null || true
+    flock -u 200 2>/dev/null || true
+    exec 200>&- 2>/dev/null || true
+  }
+  trap cleanup_handler EXIT
+
+  mkdir -p "$client_dir"
   local current_size
   current_size=$(du -sb "$client_dir" 2>/dev/null | cut -f1)
   current_size=${current_size:-0}
   local need_size=$((current_size + new_size))
 
-  if [[ "$need_size" -gt "$MAX_BYTES" ]]; then
-    local freed=0
-    while [[ "$need_size" -gt "$MAX_BYTES" ]]; do
-      local oldest
-      oldest=$(find "$client_dir" -type f -printf '%T+ %p\n' 2>/dev/null | sort -n | head -1)
-      if [[ -z "$oldest" ]]; then
-        break
-      fi
-      oldest="${oldest#* }"
-      local fsize
-      fsize=$(stat -c %s "$oldest" 2>/dev/null || echo 0)
-      rm -f "$oldest"
-      freed=$((freed + fsize))
-      need_size=$((need_size - fsize))
-      log_info "client=${client_id} quota: deleted path=${oldest} freed=${fsize} bytes"
-    done
-    current_size=$((current_size - freed))
-    need_size=$((current_size + new_size))
-    if [[ "$need_size" -gt "$MAX_BYTES" ]] && [[ -n "$(find "$client_dir" -type f 2>/dev/null)" ]]; then
-      find "$client_dir" -type f ! -path "$tmp" -exec rm -f {} \;
-      log_info "client=${client_id} quota: cleared all existing files to make room for large upload"
+  # Delete oldest files until under quota; one find+sort, then iterate (avoids O(n²) repeated scans)
+  while IFS= read -r -u 3 mtime path; do
+    [[ "$need_size" -le "$MAX_BYTES" ]] && break
+    [[ -z "$path" ]] && continue
+    if [[ ! -f "$path" ]]; then
+      continue
     fi
+    local fsize
+    fsize=$(stat -c %s "$path" 2>/dev/null || echo 0)
+    rm -f "$path"
+    need_size=$((need_size - fsize))
+    log_info "client=${client_id} quota: deleted path=${path} freed=${fsize} bytes"
+  done 3< <(find "$client_dir" -type f -printf '%T+ %p\n' 2>/dev/null | sort -n)
+
+  if [[ "$need_size" -gt "$MAX_BYTES" ]]; then
+    log_error "client=${client_id} quota exceeded after deletions need_size=${need_size} max=${MAX_BYTES}"
+    send_response 413 "Payload Too Large"
+    return
+  fi
+  local actual_size
+  actual_size=$(du -sb "$client_dir" 2>/dev/null | cut -f1)
+  actual_size=${actual_size:-0}
+  if [[ $((actual_size + new_size)) -gt "$MAX_BYTES" ]]; then
+    log_warn "client=${client_id} quota mismatch actual_size=${actual_size} need_size=${need_size} new_size=${new_size}"
   fi
 
   local dest="${client_dir}/${x_file_path}"
   local dest_dir
   dest_dir=$(dirname "$dest")
+  if [[ -e "$dest" ]]; then
+    log_info "client=${client_id} path=${x_file_path} overwriting existing file"
+  fi
+  # Path escape check: lock prevents same-client races; re-check immediately before mv to minimize window for external symlink changes.
+  if command -v realpath &>/dev/null; then
+    local base_canon dest_dir_canon
+    base_canon=$(realpath -m "$client_dir" 2>/dev/null)
+    dest_dir_canon=$(realpath -m "$dest_dir" 2>/dev/null || true)
+    if [[ -n "$base_canon" && -n "$dest_dir_canon" ]]; then
+      if [[ "$dest_dir_canon" != "$base_canon" && "$dest_dir_canon" != "${base_canon}/"* ]]; then
+        log_error "client=${client_id} path=${x_file_path} escapes client directory"
+        send_response 400 "Bad Request"
+        return
+      fi
+    fi
+  fi
   mkdir -p "$dest_dir"
+  if command -v realpath &>/dev/null; then
+    base_canon=$(realpath -m "$client_dir" 2>/dev/null)
+    dest_dir_canon=$(realpath -m "$dest_dir" 2>/dev/null || true)
+    if [[ -n "$base_canon" && -n "$dest_dir_canon" ]]; then
+      if [[ "$dest_dir_canon" != "$base_canon" && "$dest_dir_canon" != "${base_canon}/"* ]]; then
+        log_error "client=${client_id} path=${x_file_path} escapes client directory (re-check before mv)"
+        send_response 400 "Bad Request"
+        return
+      fi
+    fi
+  fi
   if ! mv "$tmp" "$dest"; then
     log_error "client=${client_id} path=${x_file_path} move failed"
     send_response 500 "Internal Server Error"
-    return
+    return  # EXIT trap runs cleanup_handler (lock release, tmp removal)
   fi
-  trap - EXIT
 
   log_info "client=${client_id} path=${x_file_path} size=${new_size} result=ok"
   send_response 200 "OK"
@@ -201,8 +265,12 @@ run_daemon() {
   fi
 
   mkdir -p "$(dirname "$BACKUP_ROOT")"
+  mkdir -p "$LOCK_DIR"
   mkdir -p "$(dirname "$LOG_FILE")"
   touch "$LOG_FILE"
+
+  # Clean stale lock files (e.g. from crashed handlers); run at startup (cron can do periodic cleanup)
+  find "$LOCK_DIR" -name "*.lock" -type f -mmin "+${LOCK_STALE_MINS}" -delete 2>/dev/null || true
 
   # If running in a terminal (e.g. SSH), detach so server survives disconnect
   if [[ -t 1 ]]; then
