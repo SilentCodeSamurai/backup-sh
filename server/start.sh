@@ -40,6 +40,7 @@ parse_size() {
 MAX_BYTES=$(parse_size "$MAX_SIZE_PER_CLIENT")
 export BACKUP_ROOT LOCK_DIR PORT ACCESS_KEY MAX_BYTES LOG_FILE SCRIPT_DIR
 
+log_trace() { log_level "TRACE" "$*"; }
 log_info()  { log_level "INFO"  "$*"; }
 log_warn()  { log_level "WARN"  "$*"; }
 log_error() { log_level "ERROR" "$*"; }
@@ -48,8 +49,12 @@ log_level() {
   local level="$1"
   shift
   local msg="$*"
-  local ts
+  local ts rid
   ts=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  rid="${REQUEST_ID:-}"
+  if [[ -n "$rid" ]]; then
+    msg="req=${rid} ${msg}"
+  fi
   echo "${ts} [${level}] ${msg}" >> "$LOG_FILE"
   # Only duplicate to stderr when attached to a TTY (avoids duplicate lines when stderr is redirected to LOG_FILE)
   if [[ -z "${BACKUP_HANDLER:-}" ]] && [[ -t 2 ]]; then
@@ -64,6 +69,9 @@ run_handler() {
   if [[ "$client_id" == "unknown" ]]; then
     log_warn "client_id unknown (SOCAT_PEERADDR unset)"
   fi
+  # Per-request ID for tracing this handler invocation
+  REQUEST_ID="$(date -u '+%Y%m%dT%H%M%SZ')-$$-$RANDOM-${client_id}"
+  log_trace "handler start client=${client_id}"
 
   local request_line
   if ! read -r request_line; then
@@ -89,12 +97,14 @@ run_handler() {
       x_file_path="${x_file_path#"${x_file_path%%[![:space:]]*}"}"
     fi
   done
+  log_trace "parsed headers content_length=${content_length} x_file_path_raw='${x_file_path}'"
 
   if [[ -z "$ACCESS_KEY" ]] || [[ "$x_access_key" != "$ACCESS_KEY" ]]; then
     log_warn "client=${client_id} auth failed (key mismatch or missing)"
     send_response 403 "Forbidden"
     return
   fi
+  log_trace "auth ok client=${client_id}"
 
   if [[ -z "$x_file_path" ]]; then
     x_file_path="upload-$(date +%s).bin"
@@ -120,10 +130,10 @@ run_handler() {
     send_response 400 "Bad Request: invalid path"
     return
   fi
+  log_trace "path sanitized path=${x_file_path}"
 
   local tmp
   tmp=$(mktemp -p "${TMPDIR:-/tmp}" backup-server.XXXXXXXXXX)
-  trap "rm -f '$tmp'" EXIT
 
   if [[ "$content_length" -gt 0 ]]; then
     # Read exactly content_length bytes; dd exits non-zero if client sends less (e.g. disconnect), and we handle that below.
@@ -146,6 +156,7 @@ run_handler() {
 
   local new_size
   new_size=$(stat -c %s "$tmp" 2>/dev/null || echo 0)
+  log_trace "body read size=${new_size}"
   if [[ "$new_size" -gt "$MAX_BYTES" ]]; then
     log_warn "client=${client_id} path=${x_file_path} rejected: single file size ${new_size} exceeds quota ${MAX_BYTES}"
     send_response 413 "Payload Too Large"
@@ -174,8 +185,9 @@ run_handler() {
   current_size=$(du -sb "$client_dir" 2>/dev/null | cut -f1)
   current_size=${current_size:-0}
   local need_size=$((current_size + new_size))
+  log_trace "quota check start current_size=${current_size} new_size=${new_size} need_size=${need_size} max_bytes=${MAX_BYTES}"
 
-  # Delete oldest files until under quota; one find+sort, then iterate (avoids O(n²) repeated scans)
+  # Delete oldest files until roughly under quota; one find+sort, then iterate (avoids O(n²) repeated scans)
   while IFS= read -r -u 3 mtime path; do
     [[ "$need_size" -le "$MAX_BYTES" ]] && break
     [[ -z "$path" ]] && continue
@@ -186,26 +198,30 @@ run_handler() {
     fsize=$(stat -c %s "$path" 2>/dev/null || echo 0)
     rm -f "$path"
     need_size=$((need_size - fsize))
-    log_info "client=${client_id} quota: deleted path=${path} freed=${fsize} bytes"
+    log_trace "quota delete file=${path} freed=${fsize} new_need_size=${need_size}"
   done 3< <(find "$client_dir" -type f -printf '%T+ %p\n' 2>/dev/null | sort -n)
 
-  if [[ "$need_size" -gt "$MAX_BYTES" ]]; then
-    log_error "client=${client_id} quota exceeded after deletions need_size=${need_size} max=${MAX_BYTES}"
-    send_response 413 "Payload Too Large"
-    return
+  # Recalculate based on actual disk usage and account for overwrite of existing dest file.
+  local dest="${client_dir}/${x_file_path}"
+  local existing_dest_size=0
+  if [[ -f "$dest" ]]; then
+    existing_dest_size=$(stat -c %s "$dest" 2>/dev/null || echo 0)
   fi
   local actual_size
   actual_size=$(du -sb "$client_dir" 2>/dev/null | cut -f1)
   actual_size=${actual_size:-0}
-  if [[ $((actual_size + new_size)) -gt "$MAX_BYTES" ]]; then
-    log_warn "client=${client_id} quota mismatch actual_size=${actual_size} need_size=${need_size} new_size=${new_size}"
+  local projected_final_size=$(( actual_size - existing_dest_size + new_size ))
+  log_trace "quota after deletions actual_size=${actual_size} existing_dest_size=${existing_dest_size} new_size=${new_size} projected_final_size=${projected_final_size} max_bytes=${MAX_BYTES}"
+  if [[ "$projected_final_size" -gt "$MAX_BYTES" ]]; then
+    log_error "client=${client_id} quota exceeded after deletions projected_final_size=${projected_final_size} max=${MAX_BYTES}"
+    send_response 413 "Payload Too Large"
+    return
   fi
 
-  local dest="${client_dir}/${x_file_path}"
   local dest_dir
   dest_dir=$(dirname "$dest")
   if [[ -e "$dest" ]]; then
-    log_info "client=${client_id} path=${x_file_path} overwriting existing file"
+    log_trace "dest exists before write path=${x_file_path}"
   fi
   # Path escape check: lock prevents same-client races; re-check immediately before mv to minimize window for external symlink changes.
   if command -v realpath &>/dev/null; then
@@ -238,7 +254,7 @@ run_handler() {
     return  # EXIT trap runs cleanup_handler (lock release, tmp removal)
   fi
 
-  log_info "client=${client_id} path=${x_file_path} size=${new_size} result=ok"
+  log_trace "handler complete client=${client_id} path=${x_file_path} size=${new_size} result=ok"
   send_response 200 "OK"
 }
 
