@@ -194,11 +194,8 @@ run_handler() {
     log_trace "quota deletion using find -printf for client_dir=${client_dir}"
     while IFS= read -r -u 3 ts path; do
       files_scanned=$((files_scanned + 1))
+      log_trace "quota candidate ts=${ts} path=${path}"
       [[ "$need_size" -le "$MAX_BYTES" ]] && break
-      [[ -z "$path" ]] && continue
-      if [[ ! -f "$path" ]]; then
-        continue
-      fi
       local fsize
       fsize=$(stat -c %s "$path" 2>/dev/null || echo 0)
       rm -f "$path"
@@ -209,11 +206,8 @@ run_handler() {
     log_trace "quota deletion falling back to stat listing for client_dir=${client_dir}"
     while IFS= read -r -u 3 ts path; do
       files_scanned=$((files_scanned + 1))
+      log_trace "quota candidate ts=${ts} path=${path}"
       [[ "$need_size" -le "$MAX_BYTES" ]] && break
-      [[ -z "$path" ]] && continue
-      if [[ ! -f "$path" ]]; then
-        continue
-      fi
       local fsize
       fsize=$(stat -c %s "$path" 2>/dev/null || echo 0)
       rm -f "$path"
