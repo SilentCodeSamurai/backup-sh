@@ -187,19 +187,41 @@ run_handler() {
   local need_size=$((current_size + new_size))
   log_trace "quota check start current_size=${current_size} new_size=${new_size} need_size=${need_size} max_bytes=${MAX_BYTES}"
 
-  # Delete oldest files until roughly under quota; one find+sort, then iterate (avoids O(n²) repeated scans)
-  while IFS= read -r -u 3 mtime path; do
-    [[ "$need_size" -le "$MAX_BYTES" ]] && break
-    [[ -z "$path" ]] && continue
-    if [[ ! -f "$path" ]]; then
-      continue
-    fi
-    local fsize
-    fsize=$(stat -c %s "$path" 2>/dev/null || echo 0)
-    rm -f "$path"
-    need_size=$((need_size - fsize))
-    log_trace "quota delete file=${path} freed=${fsize} new_need_size=${need_size}"
-  done 3< <(find "$client_dir" -type f -printf '%T+ %p\n' 2>/dev/null | sort -n)
+  # Delete oldest files until roughly under quota.
+  # Try GNU find -printf first; if unsupported or no output, fall back to stat-based listing.
+  local files_scanned=0
+  if find "$client_dir" -type f -printf '%T@ %p\n' 2>/dev/null | head -n1 >/dev/null; then
+    log_trace "quota deletion using find -printf for client_dir=${client_dir}"
+    while IFS= read -r -u 3 ts path; do
+      files_scanned=$((files_scanned + 1))
+      [[ "$need_size" -le "$MAX_BYTES" ]] && break
+      [[ -z "$path" ]] && continue
+      if [[ ! -f "$path" ]]; then
+        continue
+      fi
+      local fsize
+      fsize=$(stat -c %s "$path" 2>/dev/null || echo 0)
+      rm -f "$path"
+      need_size=$((need_size - fsize))
+      log_trace "quota delete file=${path} freed=${fsize} new_need_size=${need_size}"
+    done 3< <(find "$client_dir" -type f -printf '%T@ %p\n' 2>/dev/null | sort -n)
+  else
+    log_trace "quota deletion falling back to stat listing for client_dir=${client_dir}"
+    while IFS= read -r -u 3 ts path; do
+      files_scanned=$((files_scanned + 1))
+      [[ "$need_size" -le "$MAX_BYTES" ]] && break
+      [[ -z "$path" ]] && continue
+      if [[ ! -f "$path" ]]; then
+        continue
+      fi
+      local fsize
+      fsize=$(stat -c %s "$path" 2>/dev/null || echo 0)
+      rm -f "$path"
+      need_size=$((need_size - fsize))
+      log_trace "quota delete file=${path} freed=${fsize} new_need_size=${need_size}"
+    done 3< <(find "$client_dir" -type f -exec stat -c '%Y %n' {} \; 2>/dev/null | sort -n)
+  fi
+  log_trace "quota deletion scanned_files=${files_scanned} final_need_size=${need_size}"
 
   # Recalculate based on actual disk usage and account for overwrite of existing dest file.
   local dest="${client_dir}/${x_file_path}"
